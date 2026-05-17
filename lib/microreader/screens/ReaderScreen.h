@@ -102,6 +102,7 @@ class ReaderScreen final : public IScreen {
  private:
   BitmapFontSet font_set_;                       // owned set (for single-font set_font() path)
   const BitmapFontSet* ext_font_set_ = nullptr;  // external set (from set_fonts())
+  BitmapFont hint_font_;                         // UI font for nav-history button hints
   std::string path_;
   std::string data_dir_;
   std::string book_cache_dir_;
@@ -117,6 +118,14 @@ class ReaderScreen final : public IScreen {
   PagePosition page_pos_;
   PageContent page_;
   bool open_ok_ = false;
+
+  // Navigation history: stack of positions pushed before following a hyperlink.
+  struct NavHistoryEntry {
+    size_t chapter_idx;
+    PagePosition page_pos;
+  };
+  static constexpr size_t kMaxNavHistory = 8;
+  std::vector<NavHistoryEntry> nav_history_;
 
   // Reader options menu â€” pushed when user presses Button1.
   // Prep (set_settings + populate) happens before calling app_->push_screen(ReaderOptions).
@@ -135,6 +144,10 @@ class ReaderScreen final : public IScreen {
                                uint16_t max_w, uint16_t max_h, uint16_t src_y = 0, uint16_t clip_h = 0);
   // Render page content (BW only). Sets grayscale_pending_ if font has grayscale.
   void render_page_(DrawBuffer& buf);
+  // Returns the bottom padding required for the progress indicator and nav hints.
+  uint16_t bottom_padding_(bool landscape) const;
+  // Draws the progress indicator and nav hints into the bottom margin.
+  void draw_bottom_(DrawBuffer& buf, bool landscape);
   // Build page_links_ from current page_ content. Called from render_page_().
   void collect_page_links_();
   // Deferred grayscale pass: writes LSB/MSB planes to BW/RED RAM and triggers

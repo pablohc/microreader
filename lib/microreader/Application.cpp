@@ -84,6 +84,35 @@ void Application::auto_open_book(const char* epub_path, DrawBuffer& buf, IRuntim
   screen_mgr_.push(&reader_, buf, runtime);
 }
 
+void Application::do_sleep_(DrawBuffer& buf) {
+  // Stop the active screen so it can save state (e.g. reading position).
+  if (IScreen* top = screen_mgr_.top())
+    top->stop();
+
+  // Save all persistent settings
+  save_settings_();
+
+  // Reset rotation before drawing the sleeping screen
+  buf.set_rotation(Rotation::Deg90);
+
+  // Attempt to load and show the sleep image (settings > SD card default > embedded fallback)
+  bool sleep_shown = false;
+  if (!sleep_image_path_.empty()) {
+    if (sleep_image_path_.rfind("embedded:", 0) == 0) {
+      int idx = std::atoi(sleep_image_path_.c_str() + 9);
+      sleep_shown = buf.show_sleep_image_embedded(idx);
+    } else {
+      sleep_shown = buf.show_sleep_image(sleep_image_path_.c_str());
+    }
+  }
+
+  if (!sleep_shown) {
+    buf.show_sleep_image_embedded(0);
+  }
+
+  running_ = false;
+}
+
 void Application::update(const ButtonState& buttons, uint32_t dt_ms, DrawBuffer& buf, IRuntime& runtime) {
   if (!started_)
     start(buf, runtime);
@@ -94,33 +123,20 @@ void Application::update(const ButtonState& buttons, uint32_t dt_ms, DrawBuffer&
   uptime_ms_ += dt_ms;
   buttons_ = buttons;
 
+  // Inactivity / auto-sleep tracking
+  if (buttons_.current != 0 || buttons_.pressed_latch != 0) {
+    inactivity_ms_ = 0;
+  } else {
+    inactivity_ms_ += dt_ms;
+    if (inactivity_ms_ >= kSleepTimeoutMs) {
+      MR_LOGI("app", "auto-sleep after %u ms idle", inactivity_ms_);
+      do_sleep_(buf);
+      return;
+    }
+  }
+
   if (buttons_.is_pressed(Button::Power)) {
-    // Stop the active screen so it can save state (e.g. reading position).
-    if (IScreen* top = screen_mgr_.top())
-      top->stop();
-
-    // Save all persistent settings
-    save_settings_();
-
-    // Reset rotation before drawing the sleeping screen
-    buf.set_rotation(Rotation::Deg90);
-
-    // Attempt to load and show the sleep image (settings > SD card default > embedded fallback)
-    bool sleep_shown = false;
-    if (!sleep_image_path_.empty()) {
-      if (sleep_image_path_.rfind("embedded:", 0) == 0) {
-        int idx = std::atoi(sleep_image_path_.c_str() + 9);
-        sleep_shown = buf.show_sleep_image_embedded(idx);
-      } else {
-        sleep_shown = buf.show_sleep_image(sleep_image_path_.c_str());
-      }
-    }
-
-    if (!sleep_shown) {
-      buf.show_sleep_image_embedded(0);
-    }
-
-    running_ = false;
+    do_sleep_(buf);
     return;
   }
 

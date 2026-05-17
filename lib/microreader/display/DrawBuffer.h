@@ -135,6 +135,13 @@ class DrawBuffer {
     display_.set_rotation(r);
   }
 
+  // Override only the local coordinate transform without touching the display driver.
+  // Use to draw UI elements in a fixed orientation regardless of current rotation.
+  // Restore with set_rotation_transform(rotation()) before the next display commit.
+  void set_rotation_transform(Rotation r) {
+    rotation_ = r;
+  }
+
   // Runtime logical dimensions (depend on rotation).
   int width() const {
     return rotation_ == Rotation::Deg0 ? DisplayFrame::kPhysicalWidth : kWidth;

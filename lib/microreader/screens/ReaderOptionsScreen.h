@@ -74,7 +74,7 @@ struct ReaderSettings {
   uint16_t progress_bottom() const {
     switch (progress_style) {
       case ProgressStyle::Percentage:
-        return 16;
+        return 18;
       case ProgressStyle::Bar:
         return 8;
       default:

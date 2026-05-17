@@ -58,6 +58,8 @@ class Application {
   void save_settings_();
   // Load all persistent state from the settings file
   void load_settings_();
+  // Common sleep sequence (save state, show sleep image, set running_=false)
+  void do_sleep_(DrawBuffer& buf);
 
   // Font management. set_reader_font() also propagates to the reader screen.
   void set_reader_font(const BitmapFontSet* fonts) {
@@ -191,6 +193,9 @@ class Application {
   uint32_t uptime_ms_ = 0;
   bool started_ = false;
   bool running_ = true;
+
+  static constexpr uint32_t kSleepTimeoutMs = 10u * 60u * 1000u;  // 10 minutes
+  uint32_t inactivity_ms_ = 0;
 
   bool invert_menu_buttons_ = false;
   bool invert_bottom_paging_ = false;

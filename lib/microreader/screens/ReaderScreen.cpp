@@ -5,6 +5,8 @@
 #include <string>
 
 #include "../Application.h"
+#include "../HeapLog.h"
+#include "../display/ui_font_small.h"
 
 #ifdef ESP_PLATFORM
 #include <sys/stat.h>
@@ -286,8 +288,18 @@ void ReaderScreen::start(DrawBuffer& buf, IRuntime& runtime) {
     saved_page_pos_ = PagePosition{app_->chapter_select()->pending_para_index(), 0, 0};
     app_->chapter_select()->clear_pending();
   } else if (app_ && app_->links_screen()->has_pending()) {
+    // Push origin onto nav history BEFORE overwriting saved_ with the link destination.
+    // saved_chapter_idx_ / saved_page_pos_ are still valid here: stop() was NOT called
+    // (ScreenManager::pop only stops the top screen, not Reader), so they hold the
+    // values from when Button1 was pressed to open the options/links flow.
+    if (nav_history_.size() < kMaxNavHistory) {
+      MR_LOGI("nav", "push origin ch=%u para=%u", (unsigned)saved_chapter_idx_, (unsigned)saved_page_pos_.paragraph);
+      nav_history_.push_back({saved_chapter_idx_, saved_page_pos_});
+    }
     saved_chapter_idx_ = app_->links_screen()->pending_chapter();
     saved_page_pos_ = PagePosition{app_->links_screen()->pending_para(), 0, 0};
+    MR_LOGI("nav", "link jump -> ch=%u para=%u (history depth=%u)", (unsigned)saved_chapter_idx_,
+            (unsigned)saved_page_pos_.paragraph, (unsigned)nav_history_.size());
     app_->links_screen()->clear_pending();
   } else {
     load_position_();
@@ -336,9 +348,13 @@ void ReaderScreen::stop() {
   pos_path_.shrink_to_fit();
   book_key_.clear();
   book_key_.shrink_to_fit();
+  nav_history_.clear();
   open_ok_ = false;
-  saved_chapter_idx_ = 0;
-  saved_page_pos_ = PagePosition{0, 0, 0};
+  // NOTE: saved_chapter_idx_ / saved_page_pos_ are intentionally NOT reset here.
+  // They are set in update() before pushing the options screen, and start() uses
+  // them as the nav-history origin when a link jump is pending. stop() is called
+  // by ScreenManager::push(), which fires between update() and start(), so clearing
+  // here would destroy the origin before start() can capture it.
   buf_ = nullptr;
 }
 
@@ -379,9 +395,32 @@ void ReaderScreen::update(const ButtonState& buttons, DrawBuffer& buf, IRuntime&
     } else {
       switch (btn) {
         case Button::Button0:
+          if (!nav_history_.empty()) {
+            // Navigate back to the previous position in the history stack.
+            NavHistoryEntry origin = nav_history_.back();
+            nav_history_.pop_back();
+            MR_LOGI("nav", "back -> ch=%u para=%u (remaining history=%u)", (unsigned)origin.chapter_idx,
+                    (unsigned)origin.page_pos.paragraph, (unsigned)nav_history_.size());
+            load_chapter_(origin.chapter_idx);
+            page_pos_ = origin.page_pos;
+            layout_engine_.set_source(*chapter_src_);
+            layout_engine_.set_image_size_fn(image_size_fn_);
+            layout_engine_.set_hyphenation_lang(detect_language(mrb_.metadata().language));
+            render_page_(buf);
+            buf.refresh();
+            save_position_();
+            return;
+          }
           app_->pop_screen();
           return;
         case Button::Button1:
+          if (!nav_history_.empty()) {
+            // Stay here: clear the nav history and redraw to remove hints.
+            nav_history_.clear();
+            render_page_(buf);
+            buf.refresh();
+            return;
+          }
           saved_chapter_idx_ = chapter_idx_;
           saved_page_pos_ = page_pos_;
           app_->reader_options()->set_settings(&reader_settings_);
@@ -534,8 +573,13 @@ void ReaderScreen::render_page_(DrawBuffer& buf) {
   PageOptions opts = make_page_opts(&reader_settings_, W, H);
   opts.align_override = align_override;
   opts.padding_right = reader_settings_.h_padding();
-  opts.padding_bottom =
-      static_cast<uint16_t>(reader_settings_.progress_bottom() + reader_settings_.v_padding() + (landscape ? 2 : 0));
+  if (landscape && !nav_history_.empty()) {
+    // Hints are drawn in portrait coords; portrait Y=pct_top..800 maps to landscape X=pct_top..800.
+    // Ensure padding_right clears that strip so text doesn't overlap the hints.
+    const uint16_t hint_strip = (reader_settings_.progress_style == ProgressStyle::Bar) ? 18u : 16u;
+    opts.padding_right = std::max(opts.padding_right, hint_strip);
+  }
+  opts.padding_bottom = bottom_padding_(landscape);
   opts.padding_left = reader_settings_.h_padding();
   opts.padding_top = static_cast<uint16_t>(kPaddingTop + reader_settings_.v_padding());
   opts.line_height_multiplier_percent = reader_settings_.line_height_multiplier_percent();
@@ -632,6 +676,40 @@ void ReaderScreen::render_page_(DrawBuffer& buf) {
     }
   }
 
+  draw_bottom_(buf, landscape);
+
+  // ── Timing
+  // ──────────────────────────────────────────────────────────────
+  int n_words = 0;
+  for (const auto& ci : page_.items)
+    if (const PageTextItem* ti = std::get_if<PageTextItem>(&ci))
+      n_words += static_cast<int>(ti->line.words.size());
+
+#ifdef ESP_PLATFORM
+  long render_us = (long)(esp_timer_get_time() - t0);
+  ESP_LOGI("perf", "render_page: %ldus (%ld.%ldms) words=%d images=%d", render_us, render_us / 1000,
+           (render_us % 1000) / 100, n_words, (int)images.size());
+#endif
+}
+
+uint16_t ReaderScreen::bottom_padding_(bool landscape) const {
+  const uint16_t base =
+      static_cast<uint16_t>(reader_settings_.progress_bottom() + reader_settings_.v_padding() + (landscape ? 2 : 0));
+  if (nav_history_.empty() || landscape)
+    return base;  // landscape hints go on the right edge, not bottom — no extra bottom padding needed
+  // Portrait: hints share the bottom margin. Need at least as much room as the percentage indicator, plus 2px for bar.
+  const uint16_t pct_base = static_cast<uint16_t>(16 + reader_settings_.v_padding() + 2);
+  if (reader_settings_.progress_style == ProgressStyle::Bar)
+    return std::max(base, static_cast<uint16_t>(pct_base + 2));
+  if (reader_settings_.progress_style == ProgressStyle::None)
+    return std::max(base, pct_base);
+  return base;  // Percentage already reserves enough
+}
+
+void ReaderScreen::draw_bottom_(DrawBuffer& buf, bool landscape) {
+  const int W = buf.width();
+  const int H = buf.height();
+
   if (mrb_.paragraph_count() > 0 && reader_settings_.progress_style != ProgressStyle::None) {
     int pct = progress_pct();
     if (reader_settings_.progress_style == ProgressStyle::Percentage) {
@@ -649,18 +727,39 @@ void ReaderScreen::render_page_(DrawBuffer& buf) {
     }
   }
 
-  // ── Timing
-  // ──────────────────────────────────────────────────────────────
-  int n_words = 0;
-  for (const auto& ci : page_.items)
-    if (const PageTextItem* ti = std::get_if<PageTextItem>(&ci))
-      n_words += static_cast<int>(ti->line.words.size());
+  if (nav_history_.empty())
+    return;
 
-#ifdef ESP_PLATFORM
-  long render_us = (long)(esp_timer_get_time() - t0);
-  ESP_LOGI("perf", "render_page: %ldus (%ld.%ldms) words=%d images=%d", render_us, render_us / 1000,
-           (render_us % 1000) / 100, n_words, (int)images.size());
-#endif
+  if (!hint_font_.valid())
+    hint_font_.init(kFontData_ui_small_mbf, kFontData_ui_small_mbf_size);
+  if (!hint_font_.valid())
+    return;
+
+  // Always draw hints in portrait (Deg90) coordinates so they land at the same
+  // physical button locations regardless of current rotation.
+  const Rotation saved_rotation = buf.rotation();
+  buf.set_rotation_transform(Rotation::Deg90);
+  const int W90 = buf.width();
+  const int H90 = buf.height();
+
+  const int pair0 = W90 * 163 / 550;
+  const int gap = 50;
+  const int btn0_pos = pair0 - gap;  // Button0 = back
+  const int btn1_pos = pair0 + gap;  // Button1 = stay
+  const int pct_top = (reader_settings_.progress_style == ProgressStyle::Bar) ? H90 - 18 : H90 - 16;
+  const int text_y = pct_top + static_cast<int>(hint_font_.baseline());
+
+  const char* kBack = "back";
+  const char* kStay = "stay";
+  const size_t back_len = std::strlen(kBack);
+  const size_t stay_len = std::strlen(kStay);
+  const int bw = hint_font_.word_width(kBack, back_len, FontStyle::Regular);
+  const int sw = hint_font_.word_width(kStay, stay_len, FontStyle::Regular);
+
+  buf.draw_text_proportional(btn0_pos - bw / 2, text_y, kBack, back_len, hint_font_, false);
+  buf.draw_text_proportional(btn1_pos - sw / 2, text_y, kStay, stay_len, hint_font_, false);
+
+  buf.set_rotation_transform(saved_rotation);
 }
 
 bool ReaderScreen::render_current_page(DrawBuffer& buf) {
