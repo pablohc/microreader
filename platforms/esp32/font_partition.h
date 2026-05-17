@@ -73,6 +73,25 @@ struct FontPartition {
     return stored_crc != expected_crc;
   }
 
+  // Returns true if the given SD card file will fit in the font partition
+  // (i.e. kFontPartHeaderSize + file_size <= partition size).  Call this
+  // before provision_uncompressed_file to give the user a clear error message
+  // without touching flash.
+  static bool fits_partition(const char* path) {
+    const esp_partition_t* part = find();
+    if (!part)
+      return false;
+    FILE* f = fopen(path, "rb");
+    if (!f)
+      return false;
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fclose(f);
+    if (file_size < 0)
+      return false;
+    return (size_t)(kFontPartHeaderSize + (size_t)file_size) <= part->size;
+  }
+
   // Copy an uncompressed .mbf/.bin file from the SD card to the SPIFFS partition
   static bool provision_uncompressed_file(const char* path, uint8_t* write_buf_ext, size_t write_buf_size,
                                           std::function<void(int)> on_progress = nullptr) {

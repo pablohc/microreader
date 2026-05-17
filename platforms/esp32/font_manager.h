@@ -29,6 +29,19 @@ class FontManager : public microreader::FontManager {
     return nullptr;
   }
 
+  // Returns true if the file is a valid FNTS v2 bundle (the current format).
+  // Version 2 bundles always contain MBF4 v4 inner fonts, so no inner check needed.
+  static bool is_valid_font_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f)
+      return false;
+    uint8_t hdr[6] = {};
+    bool ok = fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr) && memcmp(hdr, "FNTS", 4) == 0 && hdr[4] > 0 &&  // num_sizes
+              hdr[5] == 2;  // bundle version must be exactly 2
+    fclose(f);
+    return ok;
+  }
+
   void init() {
     if (font_part_.mmap()) {
       load_fonts_();
@@ -64,11 +77,34 @@ class FontManager : public microreader::FontManager {
     uint32_t target_crc = is_embedded ? asset_blob::g_assets.crc(target_asset) : 0;
 
     if (custom_font == installed_font && (!is_embedded || !FontPartition::needs_provisioning(target_crc))) {
-      // If we skipped setting it in init() due to CRC checks, set it now.
       if (font_set_.valid()) {
         app_.set_reader_font(font_set());
+        return;
       }
-      return;
+      // Font is marked installed but invalid — clear the record and fall through to re-provision.
+      ESP_LOGW("font", "installed font invalid, re-provisioning");
+      app_.set_installed_font_path("");
+    }
+
+    if (!is_embedded) {
+      if (!is_valid_font_file(custom_font.c_str())) {
+        ESP_LOGE("font", "SD card font rejected (invalid header): %s", custom_font.c_str());
+        buf.sync_bw_ram();
+        buf.show_loading("Font incompatible!", 0);
+        app_.set_custom_font_path(installed_font);
+        if (font_set_.valid())
+          app_.set_reader_font(font_set());
+        return;
+      }
+      if (!FontPartition::fits_partition(custom_font.c_str())) {
+        ESP_LOGE("font", "SD card font too large for partition: %s", custom_font.c_str());
+        buf.sync_bw_ram();
+        buf.show_loading("Font too large!", 0);
+        app_.set_custom_font_path(installed_font);
+        if (font_set_.valid())
+          app_.set_reader_font(font_set());
+        return;
+      }
     }
 
     buf.sync_bw_ram();
@@ -99,15 +135,27 @@ class FontManager : public microreader::FontManager {
       }
     } else {
       ESP_LOGI("font", "Provisioning font from SD card: %s", custom_font.c_str());
-      if (FontPartition::provision_uncompressed_file(
-              custom_font.c_str(), buf.scratch_buf2(), microreader::DrawBuffer::kBufSize,
-              [&buf](int pct) { buf.show_loading("Installing fonts...", pct); })) {
-        app_.set_installed_font_path(custom_font);
-        buf.reset_after_scratch();
+      bool prov_ok = FontPartition::provision_uncompressed_file(
+          custom_font.c_str(), buf.scratch_buf2(), microreader::DrawBuffer::kBufSize,
+          [&buf](int pct) { buf.show_loading("Installing fonts...", pct); });
+      buf.reset_after_scratch();
+      if (prov_ok) {
         if (font_part_.mmap()) {
           load_fonts_();
-          app_.set_reader_font(font_set());
+          if (font_set_.valid()) {
+            app_.set_installed_font_path(custom_font);
+            app_.set_reader_font(font_set());
+          } else {
+            ESP_LOGE("font", "SD card font loaded but produced no valid Normal style");
+            app_.set_custom_font_path(installed_font);
+          }
         }
+      } else {
+        ESP_LOGE("font", "SD card font provisioning failed: %s", custom_font.c_str());
+        buf.show_loading("Font install failed!", 0);
+        app_.set_custom_font_path(installed_font);
+        if (font_set_.valid())
+          app_.set_reader_font(font_set());
       }
     }
   }
@@ -133,8 +181,8 @@ class FontManager : public microreader::FontManager {
     const uint8_t* d = font_part_.data;
     size_t sz = font_part_.size;
 
-    if (sz < 40 || memcmp(d, "FNTS", 4) != 0 || d[5] < 1) {
-      ESP_LOGE("font", "Invalid font partition (expected FNTS v1 bundle)");
+    if (sz < 40 || memcmp(d, "FNTS", 4) != 0 || d[5] != 2) {
+      ESP_LOGE("font", "Invalid font partition (expected FNTS v2 bundle, got version %u)", d[5]);
       return;
     }
 

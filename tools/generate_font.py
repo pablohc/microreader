@@ -1128,10 +1128,10 @@ def _generate_bundle(faces, args, codepoint_ranges, multi_style, fallback_face=N
                 font_name = font_name[: -len(suffix)]
                 break
 
-    # Build FNTS bundle (version 1):
+    # Build FNTS bundle (version 2):
     #   [4 bytes] "FNTS" magic
     #   [1 byte]  num_fonts
-    #   [1 byte]  version (1)
+    #   [1 byte]  version (2)
     #   [2 bytes] reserved
     #   [32 bytes] font_name (null-terminated, zero-padded)
     #   [num × 4 bytes] sizes (uint32 LE)
@@ -1140,7 +1140,7 @@ def _generate_bundle(faces, args, codepoint_ranges, multi_style, fallback_face=N
     bundle = bytearray()
     bundle.extend(b"FNTS")
     bundle.append(num)
-    bundle.append(1)  # version
+    bundle.append(2)  # version
     bundle.extend(bytes(2))  # reserved
     name_bytes = font_name.encode("utf-8")[:31]  # max 31 chars + null
     bundle.extend(name_bytes)
