@@ -346,3 +346,9 @@ class TextLayout {
 };
 
 }  // namespace microreader
+
+#ifdef ESP_PLATFORM
+// Per-page layout sub-timings (microseconds). Reset by TextLayout::layout(); read after it returns.
+extern int64_t g_layout_hyph_us;     // time spent in find_hyphen_break()
+extern int64_t g_layout_metrics_us;  // time spent in font.word_width()
+#endif

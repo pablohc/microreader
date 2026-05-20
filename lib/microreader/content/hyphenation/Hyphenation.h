@@ -9,7 +9,18 @@
 
 namespace microreader {
 
-enum class HyphenationLang { None, English, German };
+enum class HyphenationLang {
+  None,
+  English,     // en
+  German,      // de
+  French,      // fr
+  Spanish,     // es
+  Italian,     // it
+  Dutch,       // nl
+  Portuguese,  // pt
+  Polish,      // pl
+  Russian,     // ru
+};
 
 // Hyphenate a word. Returns the number of valid hyphen positions written to
 // out_positions (byte offsets into word). Positions are byte offsets k such

@@ -3,99 +3,181 @@
 #include <cstdint>
 #include <cstring>
 
-#include "Liang/hyph-de.h"
-#include "Liang/hyph-en-us.h"
+#include "Liang/hyph-de.trie.h"
+#include "Liang/hyph-en.trie.h"
+#include "Liang/hyph-es.trie.h"
+#include "Liang/hyph-fr.trie.h"
+#include "Liang/hyph-it.trie.h"
+#include "Liang/hyph-nl.trie.h"
+#include "Liang/hyph-pl.trie.h"
+#include "Liang/hyph-pt.trie.h"
+#include "Liang/hyph-ru.trie.h"
 #include "Liang/liang_hyphenation_patterns.h"
 
 // ---------------------------------------------------------------------------
-// Liang hyphenation algorithm (stack-only, no heap allocation)
+// Liang hyphenation algorithm using TeX patterns compiled into binary tries
+// by Typst hypher: https://github.com/typst/hypher
 // ---------------------------------------------------------------------------
 
-#ifndef MAX_WORD_LEN
-#define MAX_WORD_LEN 128
-#endif
+static constexpr size_t kMaxWordLen = 128;
 
-static int compare_pattern_segment(const std::uint8_t* pat, int patlen, const char* seg, int seglen) {
-  int len = patlen < seglen ? patlen : seglen;
-  for (int i = 0; i < len; ++i) {
-    unsigned char a = (unsigned char)pat[i];
-    unsigned char b = (unsigned char)seg[i];
-    if (a != b)
-      return (int)a - (int)b;
+// Decoded view of a single trie node pulled from the serialized blob.
+// Node layout: [header][?levelsInfo][transitions][targets]
+// header bits: 7=hasLevels, 6-5=stride(0→1,else1-3), 4-0=childCount(31=overflow→extraByte)
+struct TrieState {
+  const HyphenationTrieData* trie;
+  size_t addr;
+  uint8_t stride;
+  uint8_t childCount;
+  const uint8_t* transitions;
+  const uint8_t* targets;
+  const uint8_t* levels;
+  uint8_t levelsLen;
+};
+
+static TrieState decode_trie_node(const HyphenationTrieData& trie, size_t addr) {
+  TrieState s = {};
+  if (addr >= trie.size)
+    return s;
+  const uint8_t* base = trie.data + addr;
+  size_t rem = trie.size - addr;
+  size_t pos = 0;
+
+  const uint8_t hdr = base[pos++];
+  const bool hasLevels = (hdr >> 7) != 0;
+  uint8_t stride = (hdr >> 5) & 0x03u;
+  if (stride == 0)
+    stride = 1;
+  size_t childCount = hdr & 0x1Fu;
+  if (childCount == 31u) {
+    if (pos >= rem)
+      return s;
+    childCount = base[pos++];
   }
-  if (patlen < seglen)
-    return -1;
-  if (patlen > seglen)
-    return 1;
-  return 0;
+
+  const uint8_t* levels = nullptr;
+  uint8_t levelsLen = 0;
+  if (hasLevels) {
+    if (pos + 1 >= rem)
+      return s;
+    const uint8_t hi = base[pos++];
+    const uint8_t loLen = base[pos++];
+    // 12-bit absolute offset into original blob (before the 4-byte root header was stripped).
+    // Subtract 4 to get index into trie.data (which starts at blob byte 4).
+    const size_t offset = (static_cast<size_t>(hi) << 4) | (loLen >> 4);
+    levelsLen = loLen & 0x0Fu;
+    if (offset < 4u || offset + levelsLen > trie.size + 4u)
+      return s;
+    levels = trie.data + offset - 4u;
+  }
+
+  if (pos + childCount > rem)
+    return s;
+  const uint8_t* transitions = base + pos;
+  pos += childCount;
+  if (pos + static_cast<size_t>(childCount) * stride > rem)
+    return s;
+  const uint8_t* targets = base + pos;
+
+  s.trie = &trie;
+  s.addr = addr;
+  s.stride = stride;
+  s.childCount = static_cast<uint8_t>(childCount < 255 ? childCount : 255);
+  s.transitions = transitions;
+  s.targets = targets;
+  s.levels = levels;
+  s.levelsLen = levelsLen;
+  return s;
 }
 
-static int find_pattern_index(const char* seg, int seglen, const HyphenationPatterns& pats,
-                              const HyphenationCharIndex* cidx) {
-  if (pats.count == 0)
-    return -1;
-  int lo = 0, hi = (int)pats.count - 1;
-  if (cidx && (unsigned char)seg[0] < 128) {
-    unsigned char c = (unsigned char)seg[0];
-    lo = cidx->start[c];
-    hi = (int)cidx->end[c] - 1;
-  }
-  while (lo <= hi) {
-    int mid = (lo + hi) >> 1;
-    int cmp = compare_pattern_segment(pats.patterns[mid].letters, pats.patterns[mid].letters_len, seg, seglen);
-    if (cmp == 0)
-      return mid;
-    if (cmp < 0)
-      lo = mid + 1;
-    else
-      hi = mid - 1;
-  }
-  return -1;
+static int32_t decode_delta(const uint8_t* buf, uint8_t stride) {
+  if (stride == 1)
+    return static_cast<int8_t>(buf[0]);
+  if (stride == 2)
+    return static_cast<int16_t>((static_cast<uint16_t>(buf[0]) << 8) | buf[1]);
+  const int32_t v = (static_cast<int32_t>(buf[0]) << 16) | (static_cast<int32_t>(buf[1]) << 8) | buf[2];
+  return v - (1 << 23);
 }
 
-static int liang_hyphenate(const char* word, size_t leftmin, size_t rightmin, char boundary_char, size_t* out_positions,
-                           int max_positions, const HyphenationPatterns& pats, const HyphenationCharIndex* cidx) {
-  if (!word)
+static bool trie_step(const TrieState& state, uint8_t ch, TrieState& out) {
+  for (size_t i = 0; i < state.childCount; ++i) {
+    if (state.transitions[i] != ch)
+      continue;
+    const uint8_t* dp = state.targets + i * state.stride;
+    const int32_t delta = decode_delta(dp, state.stride);
+    const int64_t next = static_cast<int64_t>(state.addr) + delta;
+    if (next < 0 || static_cast<size_t>(next) >= state.trie->size)
+      return false;
+    out = decode_trie_node(*state.trie, static_cast<size_t>(next));
+    return out.trie != nullptr;
+  }
+  return false;
+}
+
+static int trie_hyphenate(const char* word, size_t word_len, size_t leftmin, size_t rightmin, size_t* out_positions,
+                          int max_positions, const HyphenationTrieData& trie) {
+  if (!word || word_len == 0)
     return 0;
-  int word_len = (int)std::strlen(word);
-  if (word_len <= 0)
+  if (word_len > kMaxWordLen)
+    word_len = kMaxWordLen;
+
+  // Build augmented word ".word." with simple case-folding:
+  // ASCII A-Z → a-z; UTF-8 C3+[80-9E] (Latin-1 uppercase supplement) → C3+[A0-BE].
+  uint8_t aug[kMaxWordLen + 3];
+  aug[0] = '.';
+  for (size_t i = 0; i < word_len; ++i) {
+    uint8_t c = static_cast<uint8_t>(word[i]);
+    if (c >= 0x41u && c <= 0x5Au) {
+      c += 0x20u;  // ASCII uppercase
+    } else if (i > 0 && static_cast<uint8_t>(word[i - 1]) == 0xC3u) {
+      // UTF-8 continuation byte after C3 prefix — lowercase if in uppercase range
+      if (c >= 0x80u && c <= 0x9Eu && c != 0x97u)
+        c += 0x20u;
+    }
+    aug[1 + i] = c;
+  }
+  const int aug_len = static_cast<int>(word_len) + 2;
+  aug[aug_len - 1] = '.';
+
+  // Score array: one byte per augmented position.
+  uint8_t scores[kMaxWordLen + 3];
+  std::memset(scores, 0, static_cast<size_t>(aug_len));
+
+  // Walk trie from every starting position in the augmented word.
+  const TrieState root = decode_trie_node(trie, trie.rootOffset);
+  if (!root.trie)
     return 0;
-  if (word_len > MAX_WORD_LEN)
-    word_len = MAX_WORD_LEN;
 
-  int M = word_len + 2;
-  char ext[MAX_WORD_LEN + 3];
-  ext[0] = boundary_char;
-  std::memcpy(ext + 1, word, word_len);
-  ext[1 + word_len] = boundary_char;
-  ext[1 + word_len + 1] = '\0';
+  for (int start = 0; start < aug_len; ++start) {
+    TrieState state = root;
+    for (int cursor = start; cursor < aug_len; ++cursor) {
+      TrieState next;
+      if (!trie_step(state, aug[cursor], next))
+        break;
+      state = next;
 
-  uint8_t H[MAX_WORD_LEN + 3];
-  std::memset(H, 0, sizeof(H));
-
-  for (int i = 0; i < M; ++i) {
-    for (int j = i + 1; j <= M; ++j) {
-      int len = j - i;
-      int idx = find_pattern_index(ext + i, len, pats, cidx);
-      if (idx >= 0) {
-        const uint8_t* vals = pats.patterns[idx].values;
-        int vlen = pats.patterns[idx].values_len;
-        for (int l = 0; l < vlen && (i + l) < (int)sizeof(H); ++l)
-          if (H[i + l] < vals[l])
-            H[i + l] = vals[l];
+      if (state.levels && state.levelsLen > 0) {
+        size_t offset = 0;
+        for (uint8_t li = 0; li < state.levelsLen; ++li) {
+          const uint8_t packed = state.levels[li];
+          offset += packed / 10u;
+          const uint8_t level = packed % 10u;
+          const size_t splitPos = static_cast<size_t>(start) + offset;
+          if (splitPos < static_cast<size_t>(aug_len) && level > scores[splitPos])
+            scores[splitPos] = level;
+        }
       }
     }
   }
 
-  int leftmin_i = (leftmin > (size_t)word_len) ? word_len : static_cast<int>(leftmin);
-  int rightmin_i = (rightmin > (size_t)word_len) ? word_len : static_cast<int>(rightmin);
-
+  // Emit positions where score is odd and within leftmin/rightmin bounds.
   int count = 0;
-  for (int k = 1; k < word_len; ++k) {
-    int ext_pos = k + 1;
-    if ((H[ext_pos] & 1) && k >= leftmin_i && (word_len - k) >= rightmin_i) {
+  for (size_t k = 1; k <= word_len; ++k) {
+    // Score at augmented position k+1 corresponds to a split after byte k-1 in the word.
+    // A split at k means: prefix = word[0..k-1], suffix = word[k..end].
+    if ((scores[k + 1] & 1u) && k >= leftmin && (word_len - k) >= rightmin) {
       if (count < max_positions)
-        out_positions[count] = static_cast<size_t>(k);
+        out_positions[count] = k;
       ++count;
     }
   }
@@ -109,11 +191,39 @@ static int liang_hyphenate(const char* word, size_t leftmin, size_t rightmin, ch
 namespace microreader {
 
 int hyphenate_word(const char* word, size_t /*len*/, HyphenationLang lang, size_t* out_positions, int max_positions) {
-  if (lang == HyphenationLang::None)
-    return 0;
-  const HyphenationPatterns& pats = (lang == HyphenationLang::German) ? de_patterns : en_us_patterns;
-  const HyphenationCharIndex* cidx = (lang == HyphenationLang::German) ? &de_char_idx : &en_us_char_idx;
-  return liang_hyphenate(word, 2, 2, '.', out_positions, max_positions, pats, cidx);
+  const HyphenationTrieData* trie = nullptr;
+  switch (lang) {
+    case HyphenationLang::English:
+      trie = &en_trie;
+      break;
+    case HyphenationLang::German:
+      trie = &de_trie;
+      break;
+    case HyphenationLang::French:
+      trie = &fr_trie;
+      break;
+    case HyphenationLang::Spanish:
+      trie = &es_trie;
+      break;
+    case HyphenationLang::Italian:
+      trie = &it_trie;
+      break;
+    case HyphenationLang::Dutch:
+      trie = &nl_trie;
+      break;
+    case HyphenationLang::Portuguese:
+      trie = &pt_trie;
+      break;
+    case HyphenationLang::Polish:
+      trie = &pl_trie;
+      break;
+    case HyphenationLang::Russian:
+      trie = &ru_trie;
+      break;
+    default:
+      return 0;
+  }
+  return trie_hyphenate(word, std::strlen(word), 2, 2, out_positions, max_positions, *trie);
 }
 
 size_t find_hyphen_break(const IFont& font, const char* word_ptr, size_t len, FontStyle style, uint8_t size_pct,
@@ -141,7 +251,7 @@ size_t find_hyphen_break(const IFont& font, const char* word_ptr, size_t len, Fo
   memcpy(buf, word_ptr, copy_len);
   buf[copy_len] = '\0';
 
-  // Strip trailing punctuation before hyphenating so Liang doesn't produce
+  // Strip trailing punctuation before hyphenating so the Liang algorithm doesn't produce
   // ugly splits like "befördert-|." where the suffix is just punctuation.
   // Add new entries to either table to extend the set of stripped characters.
   static const char kStripAscii[] = ".,!?:;)]\"'";  // single ASCII bytes to strip
@@ -246,6 +356,20 @@ HyphenationLang detect_language(const std::optional<std::string>& lang_tag) {
     return HyphenationLang::German;
   if (ieq(sv, "en") || ieq(sv, "eng"))
     return HyphenationLang::English;
+  if (ieq(sv, "fr") || ieq(sv, "fra"))
+    return HyphenationLang::French;
+  if (ieq(sv, "es") || ieq(sv, "spa"))
+    return HyphenationLang::Spanish;
+  if (ieq(sv, "it") || ieq(sv, "ita"))
+    return HyphenationLang::Italian;
+  if (ieq(sv, "nl") || ieq(sv, "nld"))
+    return HyphenationLang::Dutch;
+  if (ieq(sv, "pt") || ieq(sv, "por"))
+    return HyphenationLang::Portuguese;
+  if (ieq(sv, "pl") || ieq(sv, "pol"))
+    return HyphenationLang::Polish;
+  if (ieq(sv, "ru") || ieq(sv, "rus"))
+    return HyphenationLang::Russian;
 
   return HyphenationLang::None;
 }

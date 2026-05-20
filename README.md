@@ -139,6 +139,32 @@ python tools/image_to_mgr.py "resources/sleep/sleep_2.jpg" --out-prefix "resourc
 python tools/serial_cmd.py --port COM4 --upload-sleep "resources/sleep/sleep_2.mgr"
 ```
 
+## Hyphenation
+
+The reader uses the [Liang hyphenation algorithm](https://tug.org/docs/liang/) — the same algorithm used by TeX. Language-specific TeX pattern files are compiled into compact binary tries by [Typst hypher](https://github.com/typst/hypher) and embedded as `constexpr` byte arrays. The language is detected automatically from the EPUB's `xml:lang` attribute.
+
+**Supported languages:**
+
+| Code | Language    | Trie size |
+|------|-------------|-----------|
+| `en` | English     | 26 KB     |
+| `de` | German      | 206 KB    |
+| `fr` | French      | 7 KB      |
+| `es` | Spanish     | 14 KB     |
+| `it` | Italian     | 2 KB      |
+| `nl` | Dutch       | 64 KB     |
+| `pt` | Portuguese  | 1 KB      |
+| `pl` | Polish      | 16 KB     |
+| `ru` | Russian     | 33 KB     |
+
+Trie data lives in `lib/microreader/content/hyphenation/Liang/hyph-<lang>.trie.h` as `constexpr` byte arrays — no heap allocation, no flash reads at runtime (data is placed in DROM on ESP32).
+
+To add a new language:
+1. Download the `.bin` from [typst/hypher/tries](https://github.com/typst/hypher/tree/main/tries) into `tools/hyphenation/`
+2. Generate the header: `python tools/generate_trie_header.py tools/hyphenation/<lang>.bin lib/microreader/content/hyphenation/Liang/hyph-<lang>.trie.h <lang>`
+3. Add the new enum value to `HyphenationLang` in `Hyphenation.h`
+4. Add a `#include` + `case` in `Hyphenation.cpp` (`hyphenate_word`) and an `ieq` check in `detect_language`
+
 ## QEMU Testing (no hardware needed)
 
 ```powershell

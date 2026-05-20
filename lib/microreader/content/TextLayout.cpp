@@ -349,48 +349,51 @@ static std::vector<LayoutLine> layout_para_lines(const IFont& font, const Layout
             line_width > x + (needs_space ? space_width : 0) ? line_width - x - (needs_space ? space_width : 0) : 0;
         bool prefix_has_hyphen = false;
 #ifdef ESP_PLATFORM
-        { int64_t _th = esp_timer_get_time();
-          size_t split_tmp = find_hyphen_break(font, word_ptr, word_len, run.style, eff_size_pct, hyph_lang, avail, prefix_has_hyphen);
+        {
+          int64_t _th = esp_timer_get_time();
+          size_t split_tmp =
+              find_hyphen_break(font, word_ptr, word_len, run.style, eff_size_pct, hyph_lang, avail, prefix_has_hyphen);
           g_layout_hyph_us += esp_timer_get_time() - _th;
           const size_t split = split_tmp;
 #else
-        { const size_t split =
-            find_hyphen_break(font, word_ptr, word_len, run.style, eff_size_pct, hyph_lang, avail, prefix_has_hyphen);
+        {
+          const size_t split =
+              find_hyphen_break(font, word_ptr, word_len, run.style, eff_size_pct, hyph_lang, avail, prefix_has_hyphen);
 #endif
-        if (split > 0) {
-          // Emit prefix + hyphen, flush, then loop with the suffix.
+          if (split > 0) {
+            // Emit prefix + hyphen, flush, then loop with the suffix.
 #ifdef ESP_PLATFORM
-          int64_t _tm2 = esp_timer_get_time();
-          const uint16_t prefix_w = font.word_width(word_ptr, static_cast<uint16_t>(split), run.style, eff_size_pct);
-          g_layout_metrics_us += esp_timer_get_time() - _tm2;
+            int64_t _tm2 = esp_timer_get_time();
+            const uint16_t prefix_w = font.word_width(word_ptr, static_cast<uint16_t>(split), run.style, eff_size_pct);
+            g_layout_metrics_us += esp_timer_get_time() - _tm2;
 #else
-          const uint16_t prefix_w = font.word_width(word_ptr, static_cast<uint16_t>(split), run.style, eff_size_pct);
+            const uint16_t prefix_w = font.word_width(word_ptr, static_cast<uint16_t>(split), run.style, eff_size_pct);
 #endif
-          // Don't add a synthetic hyphen if the prefix already ends with one.
-          const uint16_t hyphen_w = prefix_has_hyphen ? 0 : font.char_width('-', run.style, eff_size_pct);
-          if (needs_space)
-            x += space_width;
-          current.words.push_back(LayoutWord{word_ptr, static_cast<uint16_t>(split), x, run.style, eff_size_pct,
-                                             run.vertical_align, false});
-          current.words.back().href = run_href;
-          x += prefix_w;
-          if (!prefix_has_hyphen) {
-            current.words.push_back(LayoutWord{"-", 1, x, run.style, eff_size_pct, run.vertical_align, true});
+            // Don't add a synthetic hyphen if the prefix already ends with one.
+            const uint16_t hyphen_w = prefix_has_hyphen ? 0 : font.char_width('-', run.style, eff_size_pct);
+            if (needs_space)
+              x += space_width;
+            current.words.push_back(LayoutWord{word_ptr, static_cast<uint16_t>(split), x, run.style, eff_size_pct,
+                                               run.vertical_align, false});
             current.words.back().href = run_href;
-            x += hyphen_w;
+            x += prefix_w;
+            if (!prefix_has_hyphen) {
+              current.words.push_back(LayoutWord{"-", 1, x, run.style, eff_size_pct, run.vertical_align, true});
+              current.words.back().href = run_href;
+              x += hyphen_w;
+            }
+            current.hyphenated = true;
+            flush_line(line_width, current.words, false);
+            lines.push_back(std::move(current));
+            current = LayoutLine{};
+            x = run.margin_left;
+            first_line = false;
+            word_ptr += split;
+            word_len -= static_cast<uint16_t>(split);
+            needs_space = false;
+            continue;
           }
-          current.hyphenated = true;
-          flush_line(line_width, current.words, false);
-          lines.push_back(std::move(current));
-          current = LayoutLine{};
-          x = run.margin_left;
-          first_line = false;
-          word_ptr += split;
-          word_len -= static_cast<uint16_t>(split);
-          needs_space = false;
-          continue;
-        }
-        } // end split block
+        }  // end split block
         if (current.words.empty()) {
           // No hyphenation and line is empty — force placement to avoid infinite loop.
           current.words.push_back(
@@ -1216,6 +1219,10 @@ std::vector<LayoutLine> TextLayout::layout_paragraph(const LayoutOptions& opts, 
 }
 
 PageContent TextLayout::layout() const {
+#ifdef ESP_PLATFORM
+  g_layout_hyph_us = 0;
+  g_layout_metrics_us = 0;
+#endif
   MR_TRACE("=== layout() FORWARD from {p=%u,off=%u,to=%u} ===", (unsigned)position_.paragraph,
            (unsigned)position_.offset, (unsigned)position_.text_offset);
   auto c = collect_page_items(position_);

@@ -699,8 +699,9 @@ void ReaderScreen::render_page_(DrawBuffer& buf) {
 #ifdef ESP_PLATFORM
   long render_us = (long)(esp_timer_get_time() - t0);
   long draw_us = (long)(esp_timer_get_time() - t_draw);
-  ESP_LOGI("perf", "render_page: %ldms total (layout=%ldms draw=%ldms) words=%d images=%d", render_us / 1000,
-           layout_us / 1000, draw_us / 1000, n_words, (int)images.size());
+  ESP_LOGI("perf", "render_page: %ldms total (layout=%ldms[hyph=%ldms metrics=%ldms] draw=%ldms) words=%d images=%d",
+           render_us / 1000, layout_us / 1000, (long)(g_layout_hyph_us / 1000), (long)(g_layout_metrics_us / 1000),
+           draw_us / 1000, n_words, (int)images.size());
 #endif
 }
 
