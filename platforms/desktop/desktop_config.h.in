@@ -1,0 +1,2 @@
+#pragma once
+#define MICROREADER_SD_DIR "@MICROREADER_SD_DIR@"

@@ -1,211 +1,150 @@
-# MicroReader
+# microreader2
 
-A minimal EPUB/TXT reader for ESP32-C3 e-ink devices.
+Minimal EPUB reader for ESP32-C3 + SSD1677 e-ink display (480×800 portrait).
+Includes a desktop SDL2 emulator for development without hardware.
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-  <img src="resources/images/20251218_181610.jpg" alt="Sample 1" style="width: 49%;">
-  <img src="resources/images/20251218_181719.jpg" alt="Sample 2" style="width: 49%;">
-  <img src="resources/images/20251218_181444.jpg" alt="Sample 3" style="width: 49%;">
-  <img src="resources/images/20251218_181453.jpg" alt="Sample 4" style="width: 49%;">
-</div>
+## Hardware
 
-## Features
-
-- [x] Antialiased font rendering
-- [x] TXT reader
-- [x] EPUB reader
-- [x] File browser for SD card navigation
-- [x] Bold/Italic font support
-- [x] Liang English/German hyphenation
-
----
-
-## Quick Start
-
-### I want to contribute code (no hardware needed)
-
-```bash
-# Clone
-git clone https://github.com/CidVonHighwind/microreader.git
-cd microreader
-
-# Build tests
-test/scripts/build_tests.sh      # macOS/Linux
-test\scripts\build_tests.ps1     # Windows
-
-# Run tests
-test/scripts/run_tests.sh        # macOS/Linux
-test\scripts\run_tests.ps1       # Windows
-```
-
-### I have the hardware
-
-```bash
-# Build + upload + monitor
-platformio run -t upload && platformio device monitor
-```
-
----
+| | |
+|---|---|
+| MCU | ESP32-C3 (RISC-V, 160 MHz) |
+| Display | 4.26" e-ink 800×480 (SSD1677), rotated → 480×800 portrait |
+| Storage | SD card (FAT32, SPI) |
+| Flash | 16 MB |
+| Input | ADC buttons |
 
 ## Project Structure
 
 ```
-src/
-├── content/          # EPUB/TXT parsing, word providers
-│   ├── epub/         # EPUB reader
-│   ├── providers/    # StringWordProvider, FileWordProvider, EpubWordProvider
-│   └── xml/          # XML parser
-├── text/             # Text layout engine
-│   ├── layout/       # GreedyLayout, KnuthPlassLayout
-│   └── hyphenation/  # Language-specific hyphenation
-├── rendering/        # Font rendering (TextRenderer, SimpleFont)
-├── ui/               # Screens (FileBrowser, TextViewer, ImageViewer)
-├── core/             # Hardware drivers (EInkDisplay, SDCard, Buttons)
-└── resources/        # Embedded fonts and images
-
-test/
-├── unit/             # Test executables
-├── mocks/            # Arduino mocks for desktop testing
-├── common/           # Test utilities (TestRunner)
-└── scripts/          # Build/run scripts
+lib/microreader/       shared core (platform-agnostic C++17)
+  content/             EPUB parsing, layout, MRB binary format
+  display/             Canvas, DisplayQueue, Font interfaces
+  screens/             UI screen implementations
+platforms/desktop/     SDL2 emulator
+platforms/esp32/       ESP-IDF + PlatformIO firmware
+test/                  Google Test suite
+tools/                 Python scripts
+resources/             Fonts, sleep images
 ```
 
----
+## Building
 
----
+### Desktop (emulator)
 
-## Building for Hardware
-
-### Requirements
-- [PlatformIO](https://platformio.org/install)
-
-### Commands
-
-```bash
-# Build only
-platformio run
-
-# Build + upload
-platformio run -t upload
-
-# Serial monitor (115200 baud)
-platformio device monitor
+```powershell
+cmake -S platforms/desktop -B build/desktop-debug -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_POLICY_VERSION_MINIMUM:STRING=3.5"
+cmake --build build/desktop-debug --config Debug
+.\build\desktop-debug\Debug\microreader_desktop.exe
 ```
 
----
+### ESP32 (PlatformIO)
 
-## Hardware
+```powershell
+# Build + flash
+$env:USERPROFILE\.platformio\penv\Scripts\pio.exe run -t upload
 
-| Component | Spec |
-|-----------|------|
-| Board | ESP32-C3 (RISC-V @ 160MHz) |
-| RAM | 400KB SRAM |
-| Flash | 16MB |
-| Display | 4.26" E-Ink 800×480 (GDEQ0426T82, SSD1677) |
-| Storage | SD Card |
-
-<details>
-<summary>Display pin configuration</summary>
-
-| Signal | GPIO | Description |
-|--------|------|-------------|
-| SCLK | 8 | SPI Clock |
-| MOSI | 10 | SPI Data (Master Out) |
-| CS | 21 | E-Ink Chip Select |
-| DC | 4 | Data/Command |
-| RST | 5 | Reset |
-| BUSY | 6 | Busy status |
-
-Supports B&W and 4-level grayscale modes.
-
-</details>
-
----
-
-## Utility Scripts
-
-### Font Generation
-```bash
-# Install dependencies
-pip install -r scripts/generate_simplefont/requirements.txt
-
-# Generate font header from TTF
-python -m scripts.generate_simplefont.cli \
-  --name Font14 --size 16 \
-  --chars-file resources/chars_input.txt \
-  --ttf path/to/YourFont.ttf \
-  --out src/resources/fonts/Font14.h
-
-# Preview glyphs (GUI)
-python scripts/generate_simplefont/gui.py
+# Serial monitor
+$env:USERPROFILE\.platformio\penv\Scripts\pio.exe device monitor --baud 115200
 ```
 
-### Other tools
-- `scripts/simple_convert_image.py` - Convert images to C++ byte arrays
-- `scripts/lut_editor.py` - E-ink waveform LUT editor
-- `scripts/extract_chars.py` - Extract unique chars from text files
+COM4, upload baud 921600.
 
----
+### Tests
 
-## Advanced: Firmware Backup & Restore
+```powershell
+cd test
+cmake -B build2 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM:STRING=3.5
+cmake --build build2 --config Debug
 
-<details>
-<summary>Backup original firmware</summary>
-
-```bash
-# Full 16MB flash
-python -m esptool --chip esp32c3 --port COM5 read_flash 0x0 0x1000000 firmware_backup.bin
-
-# App partition only (faster)
-python -m esptool --chip esp32c3 --port COM5 read_flash 0x10000 0x640000 app0_backup.bin
+.\build2\Debug\unit_tests.exe          # fast (~375 tests, <1s)
+.\build2\Debug\microreader_tests.exe   # includes real EPUB integration tests
 ```
 
-</details>
+## Device Management
 
-<details>
-<summary>Restore firmware</summary>
+Books (`.epub`) can go anywhere on the SD card — the device scans recursively from the root. Fonts (`.mfb`) go in `/fonts/`. You can copy files directly or use `tools/serial_cmd.py` to transfer over serial:
 
-```bash
-# Full flash
-python -m esptool --chip esp32c3 --port COM5 write_flash 0x0 firmware_backup.bin
+```powershell
+# Upload an EPUB book
+python tools/serial_cmd.py --port COM4 --upload path/to/book.epub
 
-# App partition only
-python -m esptool --chip esp32c3 --port COM5 write_flash 0x10000 app0_backup.bin
+# Upload an SD card font (no firmware rebuild needed)
+python tools/serial_cmd.py --port COM4 --upload-sd-font "resources/sd fonts/Cartisse.mfb"
+
+# Upload all SD fonts
+foreach ($f in (Get-ChildItem "resources/sd fonts/*.mfb")) {
+    python tools/serial_cmd.py --port COM4 --upload-sd-font $f.FullName
+}
+
+# Interactive console (status, button injection, benchmarks)
+python tools/serial_cmd.py --port COM4
 ```
 
-</details>
+## Font Generation
 
-<details>
-<summary>Switch boot partitions (app0/app1)</summary>
+Reader fonts are FNTS bundles (`.mfb`), generated from TTF/OTF sources via `tools/generate_font.py`.
 
-```bash
-# Backup OTA data first
-python -m esptool --port COM4 read_flash 0xE000 0x2000 otadata_backup.bin
+Two kinds:
+- **Built-in** (`resources/fonts/`) — embedded in the firmware asset blob. Require a firmware rebuild to update.
+- **SD card** (`resources/sd fonts/`) — loaded from `/sdcard/fonts/` at runtime. No firmware rebuild needed; just copy or upload.
 
-# Boot app0
-python -m esptool --port COM4 write_flash 0xE000 otadata_boot_app0.bin
+The generation command is the same for both:
 
-# Boot app1
-python -m esptool --port COM4 write_flash 0xE000 otadata_boot_app1.bin
+```powershell
+python tools/generate_font.py "resources/sd fonts/ttf/Cartisse-Regular.ttf" `
+  -o "resources/sd fonts/Cartisse.mfb" --with-styles `
+  --bold "resources/sd fonts/ttf/Cartisse-Bold.ttf" `
+  --italic "resources/sd fonts/ttf/Cartisse-Italic.ttf" `
+  --bold-italic "resources/sd fonts/ttf/Cartisse-BoldItalic.ttf" `
+  --bundle --bundle-sizes 20 22 24 26 28 30 32 --font-name Cartisse
+
+# Regenerate all SD fonts
+$ttf = "resources/sd fonts/ttf"; $out = "resources/sd fonts"
+foreach ($f in @("Bitter","Cartisse","NV_Bitter","NV_Charis","NV_Cooper","NV_Garamond","NV_Jost","NV_Palatium","Readerly")) {
+    python tools/generate_font.py "$ttf/$f-Regular.ttf" -o "$out/$f.mfb" --with-styles `
+      --bold "$ttf/$f-Bold.ttf" --italic "$ttf/$f-Italic.ttf" --bold-italic "$ttf/$f-BoldItalic.ttf" `
+      --bundle --bundle-sizes 20 22 24 26 28 30 32 --font-name $f
+}
+
+# Font preview (generates tools/font_overview.html)
+python tools/font_overview.py
+
+# UI fonts (bitmap, bw-only)
+python tools/generate_font.py resources/fonts/terminus/Terminus-Bold.ttf 14 -o resources/fonts/ui-small.mbf --header lib/microreader/display/ui_font_small.h --bw-only
+python tools/generate_font.py resources/fonts/terminus/Terminus-Bold.ttf 32 -o resources/fonts/ui-header.mbf --header lib/microreader/display/ui_font_header.h --bw-only
 ```
 
-**Note:** Replace `COM5`/`COM4` with your actual port (`/dev/ttyUSB0` on Linux, `/dev/cu.usbserial-*` on macOS).
-</details>
+> **Font partition limit**: SD card fonts must fit within 3.375 MB. The font data + 4 KB header must not exceed `0x360000` bytes.
 
-## Settings consolidation
+## Firmware Backup & Restore
 
-Settings are now consolidated into a single file stored at `/microreader/settings.cfg` on the SD card. The file uses a simple key=value format and is intentionally easy to extend.
+```powershell
+# Backup running firmware partition
+python -m esptool --port COM4 read_flash 0x10000 0x650000 app0_backup.bin
 
-Keys of note:
-- `ui.screen` - integer last-visible screen id
-- `textviewer.lastPath` - last opened file path
-- `textviewer.layout` - layout CSV matching previous format
+# Restore
+python -m esptool --port COM4 write_flash 0x10000 app0_backup.bin
 
-Per-file positions are stored in `.pos` files next to each document (e.g. `/books/foo.txt.pos`) and continue to be used as before; they are not part of `settings.cfg`.
+# Switch OTA boot partition
+python tools/switch_partition.py app0 --port COM4 --flash
+python tools/switch_partition.py app1 --port COM4 --flash
+```
 
-The Settings manager is implemented in `src/core/Settings.{h,cpp}`.
+## Sleep Screen
 
-### LUT Editor
-`scripts/lut_editor.py` - Visual editor for e-ink display waveform lookup tables
-- Edit voltage patterns and timing groups
-- Configure display refresh settings
+Sleep screen images (`.mgr`) go in `/sleep/` on the SD card. Convert a JPEG first, then copy manually or upload via serial:
+
+```powershell
+python tools/image_to_mgr.py "resources/sleep/sleep_2.jpg" --out-prefix "resources/sleep/sleep_2" --bin
+python tools/serial_cmd.py --port COM4 --upload-sleep "resources/sleep/sleep_2.mgr"
+```
+
+## QEMU Testing (no hardware needed)
+
+```powershell
+# Terminal 1
+python tools/run_qemu.py --with-books
+
+# Terminal 2
+python tools/test_books.py --port socket://localhost:4444 --pages 20 --delay 0.1
+```

@@ -1,0 +1,447 @@
+#include "MrbWriter.h"
+
+#include <cstring>
+
+namespace microreader {
+
+// ---------------------------------------------------------------------------
+// BufferedFileWriter
+// ---------------------------------------------------------------------------
+
+bool BufferedFileWriter::open(const char* path) {
+  close();
+  f_ = fopen(path, "wb");
+  if (!f_)
+    return false;
+  // Larger stdio buffer coalesces fwrite→SD card writes, reducing SPI transactions.
+  // 16KB aligns with FAT allocation unit for optimal SD write granularity.
+  setvbuf(f_, nullptr, _IOFBF, 16384);
+  pos_ = 0;
+  used_ = 0;
+  return true;
+}
+
+void BufferedFileWriter::close() {
+  if (f_) {
+    flush();
+    fclose(f_);
+    f_ = nullptr;
+  }
+  pos_ = 0;
+  used_ = 0;
+}
+
+bool BufferedFileWriter::flush() {
+  if (used_ > 0) {
+    if (fwrite(buf_, 1, used_, f_) != used_)
+      return false;
+    used_ = 0;
+  }
+  return true;
+}
+
+bool BufferedFileWriter::write(const void* data, size_t size) {
+  const uint8_t* src = static_cast<const uint8_t*>(data);
+  pos_ += static_cast<uint32_t>(size);
+  // Fast path: fits in remaining buffer space.
+  if (used_ + size <= kBufSize) {
+    std::memcpy(buf_ + used_, src, size);
+    used_ += size;
+    return true;
+  }
+  // Flush current buffer.
+  if (!flush())
+    return false;
+  // Large write: bypass buffer entirely.
+  if (size >= kBufSize)
+    return fwrite(src, 1, size, f_) == size;
+  // Small write after flush: start fresh buffer.
+  std::memcpy(buf_, src, size);
+  used_ = size;
+  return true;
+}
+
+bool BufferedFileWriter::seek(uint32_t offset) {
+  if (!flush())
+    return false;
+  if (fseek(f_, static_cast<long>(offset), SEEK_SET) != 0)
+    return false;
+  pos_ = offset;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// MrbWriter
+// ---------------------------------------------------------------------------
+
+bool MrbWriter::open(const char* path) {
+  close();
+  if (!bw_.open(path))
+    return false;
+
+  // Open a temp file to stream anchor entries during conversion (zero RAM usage).
+  std::snprintf(anchor_tmp_path_, sizeof(anchor_tmp_path_), "%s.tmp", path);
+  anchor_tmp_ = std::fopen(anchor_tmp_path_, "w+b");
+  // anchor_tmp_ failure is non-fatal: add_anchor() will silently skip.
+  anchor_count_ = 0;
+
+  // Write placeholder header (will be fixed up in finish()).
+  MrbHeader hdr{};
+  std::memcpy(hdr.magic, kMrbMagic, 4);
+  hdr.version = kMrbVersion;
+  if (!write_bytes(&hdr, sizeof(hdr))) {
+    close();
+    return false;
+  }
+  return true;
+}
+
+void MrbWriter::close() {
+  bw_.close();
+  if (anchor_tmp_) {
+    std::fclose(anchor_tmp_);
+    anchor_tmp_ = nullptr;
+    if (anchor_tmp_path_[0])
+      std::remove(anchor_tmp_path_);
+    anchor_tmp_path_[0] = '\0';
+  }
+  anchor_count_ = 0;
+  paragraph_count_ = 0;
+  chapters_.clear();
+  images_.clear();
+  para_descriptors_.clear();
+  serialize_buf_.clear();
+  in_chapter_ = false;
+  chapter_para_count_ = 0;
+  chapter_char_count_ = 0;
+}
+
+void MrbWriter::begin_chapter() {
+  chapter_para_count_ = 0;
+  chapter_char_count_ = 0;
+  para_descriptors_.clear();
+  in_chapter_ = true;
+}
+
+void MrbWriter::end_chapter() {
+  if (!in_chapter_)
+    return;
+
+  // Write the descriptor table: N × { file_offset(u32), char_offset(u32) }.
+  uint32_t table_offset = bw_.tell();
+  for (const auto& d : para_descriptors_) {
+    uint8_t buf[8];
+    mrb_write_u32(buf, d.file_offset);
+    mrb_write_u32(buf + 4, d.char_offset);
+    write_bytes(buf, 8);
+  }
+
+  MrbChapterEntry entry{};
+  entry.para_table_offset = table_offset;
+  entry.reserved = 0;
+  entry.paragraph_count = chapter_para_count_;
+  entry.reserved1 = 0;
+  entry.char_count = chapter_char_count_;
+  chapters_.push_back(entry);
+  para_descriptors_.clear();
+  in_chapter_ = false;
+}
+
+bool MrbWriter::write_paragraph(const Paragraph& para) {
+  if (!bw_.is_open())
+    return false;
+
+  // Record descriptor: (current file position, chars accumulated so far).
+  para_descriptors_.push_back({bw_.tell(), chapter_char_count_});
+
+  // Count chars for text paragraphs.
+  if (para.type == ParagraphType::Text) {
+    for (const auto& run : para.text.runs)
+      chapter_char_count_ += static_cast<uint32_t>(run.text.size());
+  }
+
+  // Serialize and write: [type(1)][data_size(4)][data...] — no link header.
+  switch (para.type) {
+    case ParagraphType::Text: {
+      uint16_t spacing = para.spacing_before.value_or(kMrbSpacingDefault);
+      serialize_text(para.text, spacing);
+      uint8_t hdr[5];
+      hdr[0] = kMrbParaText;
+      mrb_write_u32(hdr + 1, static_cast<uint32_t>(serialize_buf_.size()));
+      if (!write_bytes(hdr, 5))
+        return false;
+      if (!serialize_buf_.empty() && !write_bytes(serialize_buf_.data(), serialize_buf_.size()))
+        return false;
+      break;
+    }
+    case ParagraphType::Image: {
+      uint8_t buf[9];
+      buf[0] = kMrbParaImage;
+      mrb_write_u32(buf + 1, 4);
+      mrb_write_u16(buf + 5, para.image.key);
+      mrb_write_u16(buf + 7, para.spacing_before.value_or(kMrbSpacingDefault));
+      if (!write_bytes(buf, 9))
+        return false;
+      break;
+    }
+    case ParagraphType::Hr: {
+      uint8_t buf[7];
+      buf[0] = kMrbParaHr;
+      mrb_write_u32(buf + 1, 2);
+      mrb_write_u16(buf + 5, para.spacing_before.value_or(kMrbSpacingDefault));
+      if (!write_bytes(buf, 7))
+        return false;
+      break;
+    }
+    case ParagraphType::PageBreak: {
+      uint8_t buf[5];
+      buf[0] = kMrbParaPageBreak;
+      mrb_write_u32(buf + 1, 0);
+      if (!write_bytes(buf, 5))
+        return false;
+      break;
+    }
+  }
+
+  ++chapter_para_count_;
+  ++paragraph_count_;
+  return true;
+}
+
+uint16_t MrbWriter::add_image_ref(uint32_t local_header_offset, uint16_t width, uint16_t height) {
+  uint16_t idx = static_cast<uint16_t>(images_.size());
+  MrbImageRef ref{};
+  ref.local_header_offset = local_header_offset;
+  ref.width = width;
+  ref.height = height;
+  images_.push_back(ref);
+  return idx;
+}
+
+void MrbWriter::update_image_size(uint16_t idx, uint16_t width, uint16_t height) {
+  if (idx < images_.size()) {
+    images_[idx].width = width;
+    images_[idx].height = height;
+  }
+}
+
+void MrbWriter::add_anchor(uint16_t chapter_idx, uint16_t para_index, const char* id, size_t id_len) {
+  if (id_len == 0 || id_len > 255 || !anchor_tmp_)
+    return;
+  uint8_t hdr_buf[5];
+  mrb_write_u16(hdr_buf, chapter_idx);
+  mrb_write_u16(hdr_buf + 2, para_index);
+  hdr_buf[4] = static_cast<uint8_t>(id_len);
+  if (std::fwrite(hdr_buf, 1, 5, anchor_tmp_) == 5 && std::fwrite(id, 1, id_len, anchor_tmp_) == id_len)
+    ++anchor_count_;
+}
+
+bool MrbWriter::finish(const EpubMetadata& meta, const TableOfContents& toc,
+                       const std::vector<std::string>& spine_files) {
+  if (!bw_.is_open())
+    return false;
+
+  // Close any open chapter.
+  if (in_chapter_)
+    end_chapter();
+
+  // --- Write chapter table (16 bytes each) ---
+  uint32_t chapter_offset = bw_.tell();
+  for (const auto& ch : chapters_) {
+    uint8_t buf[16];
+    mrb_write_u32(buf, ch.para_table_offset);
+    mrb_write_u32(buf + 4, ch.reserved);
+    mrb_write_u16(buf + 8, ch.paragraph_count);
+    mrb_write_u16(buf + 10, 0);
+    mrb_write_u32(buf + 12, ch.char_count);
+    if (!write_bytes(buf, 16))
+      return false;
+  }
+
+  // --- Write image ref table ---
+  uint32_t image_offset = bw_.tell();
+  for (const auto& img : images_) {
+    uint8_t buf[8];
+    mrb_write_u32(buf, img.local_header_offset);
+    mrb_write_u16(buf + 4, img.width);
+    mrb_write_u16(buf + 6, img.height);
+    if (!write_bytes(buf, 8))
+      return false;
+  }
+
+  // --- Write metadata blob ---
+  uint32_t meta_offset = bw_.tell();
+  write_string(meta.title);
+  write_string(meta.author.value_or(""));
+  write_string(meta.language.value_or(""));
+
+  // --- Write TOC ---
+  uint16_t toc_count = static_cast<uint16_t>(toc.entries.size());
+  uint8_t toc_hdr[2];
+  mrb_write_u16(toc_hdr, toc_count);
+  write_bytes(toc_hdr, 2);
+  for (const auto& entry : toc.entries) {
+    write_string(entry.label);
+    uint8_t buf[5];
+    mrb_write_u16(buf, entry.file_idx);
+    buf[2] = entry.depth;
+    mrb_write_u16(buf + 3, entry.para_index);
+    write_bytes(buf, 5);
+  }
+
+  // --- Write spine file table ---
+  // Allows runtime resolution of href filenames → chapter indices.
+  {
+    uint16_t spine_count = static_cast<uint16_t>(spine_files.size());
+    uint8_t sc_buf[2];
+    mrb_write_u16(sc_buf, spine_count);
+    write_bytes(sc_buf, 2);
+    for (const auto& name : spine_files)
+      write_string(name);
+  }
+
+  // --- Write anchor table ---
+  // Format: [count:u16] then count × [chapter_idx:u16][para_idx:u16][id_len:u8][id_bytes]
+  uint32_t anchor_offset = bw_.tell();
+  {
+    uint8_t ac_buf[2];
+    mrb_write_u16(ac_buf, static_cast<uint16_t>(anchor_count_));
+    write_bytes(ac_buf, 2);
+    // Copy streamed anchor entries from temp file.
+    if (anchor_tmp_ && anchor_count_ > 0) {
+      std::rewind(anchor_tmp_);
+      uint8_t copy_buf[128];
+      size_t n;
+      while ((n = std::fread(copy_buf, 1, sizeof(copy_buf), anchor_tmp_)) > 0)
+        write_bytes(copy_buf, n);
+    }
+  }
+
+  // --- Fix up header ---
+  MrbHeader hdr{};
+  std::memcpy(hdr.magic, kMrbMagic, 4);
+  hdr.version = kMrbVersion;
+  hdr.flags = 0;
+  hdr.paragraph_count = paragraph_count_;
+  hdr.chapter_count = static_cast<uint16_t>(chapters_.size());
+  hdr.image_count = static_cast<uint16_t>(images_.size());
+  hdr.anchor_offset = anchor_offset;
+  hdr.chapter_offset = chapter_offset;
+  hdr.image_offset = image_offset;
+  hdr.meta_offset = meta_offset;
+
+  bw_.seek(0);
+  if (!write_bytes(&hdr, sizeof(hdr)))
+    return false;
+  bw_.close();
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Paragraph serialization
+// ---------------------------------------------------------------------------
+
+void MrbWriter::serialize_text(const TextParagraph& text, uint16_t spacing) {
+  // Layout:
+  //   alignment(1) + indent(2) + margin_left(2) + margin_right(2) +
+  //   spacing_before(2) + line_height_pct(1) + inline_image_idx(2) +
+  //   inline_image_w(2) + inline_image_h(2) +
+  //   run_count(2) +
+  //   per run: style(1) + size_pct(1) + vertical_align(1) + flags(1) +
+  //            margin_left(2) + margin_right(2) + text_len(4) + text[text_len]
+  //            [if flags & 0x02: href_len(2) + href[href_len]]
+
+  // Pre-compute total size to avoid repeated resizes.
+  static constexpr size_t kHeaderSize = 1 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 2 + 2;  // 18 bytes
+  static constexpr size_t kRunHeaderSize = 1 + 1 + 1 + 1 + 2 + 2 + 4;           // 12 bytes per run
+  size_t total = kHeaderSize;
+  for (const auto& run : text.runs) {
+    total += kRunHeaderSize + run.text.size();
+    if (!run.href.empty())
+      total += 2 + run.href.size();  // href_len(2) + href bytes
+  }
+
+  serialize_buf_.resize(total);
+  uint8_t* p = serialize_buf_.data();
+
+  // Header
+  *p++ = text.alignment.has_value() ? static_cast<uint8_t>(*text.alignment) : kMrbAlignDefault;
+  mrb_write_i16(p, text.indent.value_or(kMrbIndentNone));
+  p += 2;
+  mrb_write_u16(p, 0);
+  p += 2;  // margin_left placeholder
+  mrb_write_u16(p, 0);
+  p += 2;  // margin_right placeholder
+  mrb_write_u16(p, spacing);
+  p += 2;
+  *p++ = text.line_height_pct;
+
+  // Inline image
+  if (text.inline_image.has_value()) {
+    mrb_write_u16(p, text.inline_image->key);
+    p += 2;
+    mrb_write_u16(p, text.inline_image->attr_width);
+    p += 2;
+    mrb_write_u16(p, text.inline_image->attr_height);
+    p += 2;
+  } else {
+    mrb_write_u16(p, kMrbNoImage);
+    p += 2;
+    mrb_write_u16(p, 0);
+    p += 2;
+    mrb_write_u16(p, 0);
+    p += 2;
+  }
+
+  // Run count
+  mrb_write_u16(p, static_cast<uint16_t>(text.runs.size()));
+  p += 2;
+
+  // Runs
+  for (const auto& run : text.runs) {
+    *p++ = static_cast<uint8_t>(run.style);
+    *p++ = run.size_pct;
+    *p++ = static_cast<uint8_t>(run.vertical_align);
+    uint8_t flags = run.breaking ? 0x01 : 0x00;
+    if (!run.href.empty())
+      flags |= 0x02;
+    *p++ = flags;
+    mrb_write_u16(p, run.margin_left);
+    p += 2;
+    mrb_write_u16(p, run.margin_right);
+    p += 2;
+    uint32_t text_len = static_cast<uint32_t>(run.text.size());
+    mrb_write_u32(p, text_len);
+    p += 4;
+    std::memcpy(p, run.text.data(), text_len);
+    p += text_len;
+    if (!run.href.empty()) {
+      uint16_t href_len = static_cast<uint16_t>(run.href.size());
+      mrb_write_u16(p, href_len);
+      p += 2;
+      std::memcpy(p, run.href.data(), href_len);
+      p += href_len;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// I/O helpers
+// ---------------------------------------------------------------------------
+
+bool MrbWriter::write_bytes(const void* data, size_t size) {
+  return bw_.write(data, size);
+}
+
+bool MrbWriter::write_string(const std::string& s) {
+  uint8_t len_buf[2];
+  mrb_write_u16(len_buf, static_cast<uint16_t>(s.size()));
+  if (!write_bytes(len_buf, 2))
+    return false;
+  if (!s.empty() && !write_bytes(s.data(), s.size()))
+    return false;
+  return true;
+}
+
+}  // namespace microreader

@@ -27,3 +27,21 @@ __pycache__
 /resources/fonts/Bookerly Bold.ttf
 /resources/fonts/Bookerly Bold Italic.ttf
 /3_1_1_backup.bin
+/test/books
+/test/build2
+
+# Desktop virtual SD card — keep structure, ignore book files
+/sd/books/*.epub
+
+# Temporary benchmark/capture logs
+*.log
+test/bench_results.json
+
+# Python virtual environment
+.venv/
+/sd/books
+/sd/.microreader
+/resources/fonts/alegreya
+/resources/fonts/bookerly
+/resources/images
+/resources/sd fonts/ttf

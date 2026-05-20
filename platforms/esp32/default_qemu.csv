@@ -1,0 +1,8 @@
+# Partition table for QEMU build.
+# Single app (no OTA), 2MB app, ~13.7MB FAT for all test books.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x200000,
+fat,      data, fat,     0x210000, 0xDE0000,
+coredump, data, coredump,0xFF0000, 0x10000,
