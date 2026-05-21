@@ -35,6 +35,7 @@ class ListMenuScreen : public IScreen {
   const char* title_ = nullptr;
   std::string subtitle_;
   std::string subtitle2_;
+  std::string subtitle3_;
 
   void set_alignment_left(bool left) {
     align_left_ = left;

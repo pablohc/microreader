@@ -20,7 +20,7 @@ constexpr const char* ReaderSettings::kFontSizeNames[];
 // ---------------------------------------------------------------------------
 
 void ReaderOptionsScreen::populate(const TableOfContents& toc, uint16_t current_chapter, uint16_t current_para,
-                                   const std::string& fallback_title, int progress_pct) {
+                                   const std::string& fallback_title, int book_progress_pct, int chapter_progress_pct) {
   chapter_title_ = fallback_title;
   int best_match = -1;
   for (size_t i = 0; i < toc.entries.size(); ++i) {
@@ -33,7 +33,8 @@ void ReaderOptionsScreen::populate(const TableOfContents& toc, uint16_t current_
     chapter_title_ = toc.entries[best_match].label;
   }
 
-  progress_pct_ = progress_pct;
+  book_progress_pct_ = book_progress_pct;
+  chapter_progress_pct_ = chapter_progress_pct;
   if (!toc.entries.empty() && app_) {
     app_->chapter_select()->populate(toc, current_chapter, current_para);
     app_->chapter_select()->clear_pending();
@@ -71,13 +72,14 @@ void ReaderOptionsScreen::on_start() {
     subtitle_ = subtitle_.substr(0, 39) + "...";
   }
 
-  char pct_str[32];
-  snprintf(pct_str, sizeof(pct_str), "%d%%", progress_pct_);
+  char pct_str[48];
+  snprintf(pct_str, sizeof(pct_str), "Chapter: %d%%  |  Book: %d%%", chapter_progress_pct_, book_progress_pct_);
   subtitle2_ = pct_str;
+  subtitle3_ = "";
 
   clear_items();
-  idx_justify_ = idx_padding_h_ = idx_padding_v_ = idx_line_spacing_ = idx_progress_ = idx_chapters_ = idx_pub_fonts_ =
-      idx_rotate_display_ = idx_links_ = -1;
+  idx_justify_ = idx_padding_h_ = idx_padding_v_ = idx_line_spacing_ = idx_progress_ = idx_progress_scope_ =
+      idx_chapters_ = idx_pub_fonts_ = idx_rotate_display_ = idx_links_ = -1;
 
   char tmp[40];
 
@@ -148,6 +150,12 @@ void ReaderOptionsScreen::on_start() {
                             : settings_->progress_style == ProgressStyle::Percentage ? "Percent"
                                                                                      : "Bar";
     add_item(fmt_setting(tmp, sizeof(tmp), "Progress", prog_name));
+
+    if (settings_->progress_style != ProgressStyle::None) {
+      idx_progress_scope_ = count();
+      add_item(fmt_setting(tmp, sizeof(tmp), "Progress Scope",
+                           settings_->progress_scope == ProgressScope::Chapter ? "Chapter" : "Book"));
+    }
 
     idx_rotate_display_ = count();
     add_item(fmt_setting(tmp, sizeof(tmp), "Display", app_ && app_->rotate_display() ? "Landscape" : "Portrait"));
@@ -229,6 +237,12 @@ void ReaderOptionsScreen::on_select(int index) {
   }
   if (index == idx_progress_) {
     settings_->progress_style = static_cast<ProgressStyle>((static_cast<uint8_t>(settings_->progress_style) + 1) % 3);
+    refresh_items_(index);
+    return;
+  }
+  if (index == idx_progress_scope_) {
+    settings_->progress_scope =
+        settings_->progress_scope == ProgressScope::Book ? ProgressScope::Chapter : ProgressScope::Book;
     refresh_items_(index);
     return;
   }

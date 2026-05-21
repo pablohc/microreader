@@ -178,7 +178,7 @@ class ReaderScreen final : public IScreen {
     return page_links_;
   }
 
-  // Returns progress percentage 0-100 based on read characters
+  // Returns progress percentage 0-100 based on read characters (whole book)
   int progress_pct() const {
     if (mrb_.paragraph_count() == 0)
       return 0;
@@ -189,8 +189,21 @@ class ReaderScreen final : public IScreen {
     uint64_t chars_before = 0;
     for (size_t i = 0; i < chapter_idx_; ++i)
       chars_before += mrb_.chapter_char_count(static_cast<uint16_t>(i));
-    const uint64_t cur = chars_before + (chapter_src_ ? chapter_src_->char_before_para(page_pos_.paragraph) : 0);
+    const uint64_t cur =
+        chars_before + (chapter_src_ ? chapter_src_->char_before_para(page_pos_.paragraph) : 0) + page_pos_.text_offset;
     return total_chars > 0 ? static_cast<int>(cur * 100u / total_chars) : 0;
+  }
+
+  // Returns progress percentage 0-100 within the current chapter
+  int chapter_progress_pct() const {
+    if (mrb_.paragraph_count() == 0)
+      return 0;
+    if (page_.at_chapter_end)
+      return 100;
+    const uint64_t chapter_chars = mrb_.chapter_char_count(static_cast<uint16_t>(chapter_idx_));
+    const uint64_t cur =
+        (chapter_src_ ? chapter_src_->char_before_para(page_pos_.paragraph) : 0) + page_pos_.text_offset;
+    return chapter_chars > 0 ? static_cast<int>(cur * 100u / chapter_chars) : 0;
   }
 };
 

@@ -231,6 +231,7 @@ void microreader::Application::save_settings_() {
   std::fprintf(f, "padding_v=%u\n", static_cast<unsigned>(rs.padding_v_idx));
   std::fprintf(f, "spacing_override=%u\n", static_cast<unsigned>(rs.spacing_override));
   std::fprintf(f, "progress=%u\n", static_cast<unsigned>(rs.progress_style));
+  std::fprintf(f, "progress_scope=%u\n", static_cast<unsigned>(rs.progress_scope));
   std::fprintf(f, "override_pub_fonts=%u\n", rs.override_publisher_fonts ? 1u : 0u);
   std::fprintf(f, "font_size=%u\n", static_cast<unsigned>(rs.font_size_idx));
 
@@ -295,6 +296,8 @@ void microreader::Application::load_settings_() {
       rs.spacing_override = SpacingOverride::Book;
     else if (std::sscanf(line, "progress=%u", &uval) == 1)
       rs.progress_style = uval <= 2 ? static_cast<ProgressStyle>(uval) : ProgressStyle::Bar;
+    else if (std::sscanf(line, "progress_scope=%u", &uval) == 1)
+      rs.progress_scope = uval <= 1 ? static_cast<ProgressScope>(uval) : ProgressScope::Book;
     else if (std::sscanf(line, "override_pub_fonts=%u", &uval) == 1)
       rs.override_publisher_fonts = (uval != 0);
     else if (std::sscanf(line, "font_size=%u", &uval) == 1)

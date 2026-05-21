@@ -44,6 +44,8 @@ void ListMenuScreen::ensure_visible_() {
   int subtitle_h = subtitle_.empty() ? 0 : ui_font_.y_advance() + 8;
   if (!subtitle2_.empty() && ui_font_.valid())
     subtitle_h += ui_font_.y_advance() + 8;
+  if (!subtitle3_.empty() && ui_font_.valid())
+    subtitle_h += ui_font_.y_advance() + 8;
   const int header_h = kHeaderY + (header_font_.valid() ? header_font_.y_advance() : 0) + subtitle_h + 8;
   const int visible = (buf_->height() - header_h - kBottomPadding) / line_h;
   if (visible <= 0)
@@ -69,6 +71,8 @@ void ListMenuScreen::center_on_selected_() {
   const int line_h = ui_font_.y_advance() + 8;
   int subtitle_h = subtitle_.empty() ? 0 : ui_font_.y_advance() + 8;
   if (!subtitle2_.empty() && ui_font_.valid())
+    subtitle_h += ui_font_.y_advance() + 8;
+  if (!subtitle3_.empty() && ui_font_.valid())
     subtitle_h += ui_font_.y_advance() + 8;
   const int header_h = kHeaderY + (header_font_.valid() ? header_font_.y_advance() : 0) + subtitle_h + 8;
   const int visible = (buf_->height() - header_h - kBottomPadding) / line_h;
@@ -138,6 +142,14 @@ void ListMenuScreen::draw_all_(DrawBuffer& buf, std::optional<uint8_t> battery_p
     const int title_bottom = kHeaderY + (header_font_.valid() ? header_font_.y_advance() : 0);
     buf.draw_text_proportional((W - sw2) / 2, title_bottom + subtitle_h + ui_font_.baseline() - 4, subtitle2_.c_str(),
                                sub2_len, ui_font_, false);
+    subtitle_h += ui_font_.y_advance() + 8;
+  }
+  if (!subtitle3_.empty() && ui_font_.valid()) {
+    const size_t sub3_len = subtitle3_.size();
+    const int sw3 = ui_font_.word_width(subtitle3_.c_str(), sub3_len, FontStyle::Regular);
+    const int title_bottom = kHeaderY + (header_font_.valid() ? header_font_.y_advance() : 0);
+    buf.draw_text_proportional((W - sw3) / 2, title_bottom + subtitle_h + ui_font_.baseline() - 4, subtitle3_.c_str(),
+                               sub3_len, ui_font_, false);
     subtitle_h += ui_font_.y_advance() + 8;
   }
 

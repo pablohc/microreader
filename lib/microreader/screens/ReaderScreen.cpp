@@ -427,7 +427,7 @@ void ReaderScreen::update(const ButtonState& buttons, DrawBuffer& buf, IRuntime&
           saved_page_pos_ = page_pos_;
           app_->reader_options()->set_settings(&reader_settings_);
           app_->reader_options()->populate(mrb_.toc(), static_cast<uint16_t>(chapter_idx_), page_pos_.paragraph,
-                                           mrb_.metadata().title, progress_pct());
+                                           mrb_.metadata().title, progress_pct(), chapter_progress_pct());
           app_->reader_options()->set_page_links(page_links_, mrb_.spine_files(), mrb_);
           app_->push_screen(ScreenId::ReaderOptions);
           return;
@@ -727,7 +727,7 @@ void ReaderScreen::draw_bottom_(DrawBuffer& buf, bool landscape) {
   const int H = buf.height();
 
   if (mrb_.paragraph_count() > 0 && reader_settings_.progress_style != ProgressStyle::None) {
-    int pct = progress_pct();
+    int pct = reader_settings_.progress_scope == ProgressScope::Chapter ? chapter_progress_pct() : progress_pct();
     if (reader_settings_.progress_style == ProgressStyle::Percentage) {
       char pct_str[8];
       snprintf(pct_str, sizeof(pct_str), "%d%%", pct);

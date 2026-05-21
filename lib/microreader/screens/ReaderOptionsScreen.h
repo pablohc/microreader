@@ -19,6 +19,11 @@ enum class ProgressStyle : uint8_t {
   Bar = 2,
 };
 
+enum class ProgressScope : uint8_t {
+  Book = 0,
+  Chapter = 1,
+};
+
 enum class AlignOverride : uint8_t {
   Book = 0,
   Justify,
@@ -39,11 +44,12 @@ enum class SpacingOverride : uint8_t {
 struct ReaderSettings {
   AlignOverride align_override = AlignOverride::Book;
   SpacingOverride spacing_override = SpacingOverride::Spacing_1_0x;
-  uint8_t padding_h_idx = 1;                          // horizontal padding preset index (left & right)
-  uint8_t padding_v_idx = 1;                          // vertical top padding preset index
-  uint8_t font_size_idx = 1;                          // base font size preset index (1 = Normal/24px)
-  ProgressStyle progress_style = ProgressStyle::Bar;  // reading progress indicator style
-  bool override_publisher_fonts = false;              // ignore publisher's font sizes
+  uint8_t padding_h_idx = 1;                           // horizontal padding preset index (left & right)
+  uint8_t padding_v_idx = 1;                           // vertical top padding preset index
+  uint8_t font_size_idx = 1;                           // base font size preset index (1 = Normal/24px)
+  ProgressStyle progress_style = ProgressStyle::Bar;   // reading progress indicator style
+  ProgressScope progress_scope = ProgressScope::Book;  // progress scope: whole book or current chapter
+  bool override_publisher_fonts = false;               // ignore publisher's font sizes
 
   static constexpr uint16_t kHPaddingPresets[] = {4, 12, 24, 40};
   static constexpr uint16_t kVPaddingPresets[] = {0, 4, 12, 20};
@@ -117,7 +123,7 @@ class ReaderOptionsScreen final : public ListMenuScreen {
 
   // Populate before pushing. Pass toc (may be empty — "Chapters" hidden when empty).
   void populate(const TableOfContents& toc, uint16_t current_chapter, uint16_t current_para,
-                const std::string& fallback_title, int progress_pct);
+                const std::string& fallback_title, int book_progress_pct, int chapter_progress_pct);
 
   // Set links found on the current reader page (called after populate).
   // spine_files maps chapter index → base filename for href resolution.
@@ -147,6 +153,7 @@ class ReaderOptionsScreen final : public ListMenuScreen {
   int idx_line_spacing_ = -1;
   int idx_font_size_ = -1;
   int idx_progress_ = -1;
+  int idx_progress_scope_ = -1;
   int idx_pub_fonts_ = -1;
   int idx_chapters_ = -1;
   int idx_rotate_display_ = -1;
@@ -163,7 +170,8 @@ class ReaderOptionsScreen final : public ListMenuScreen {
   int prev_idx_links_ = -1;
 
   std::string chapter_title_;
-  int progress_pct_ = 0;
+  int book_progress_pct_ = 0;
+  int chapter_progress_pct_ = 0;
 };
 
 }  // namespace microreader
