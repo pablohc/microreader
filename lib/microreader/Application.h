@@ -109,6 +109,7 @@ class Application {
   }
   void set_invert_menu_buttons(bool v) {
     invert_menu_buttons_ = v;
+    save_settings_();
   }
 
   bool invert_bottom_paging() const {
@@ -116,6 +117,7 @@ class Application {
   }
   void set_invert_bottom_paging(bool v) {
     invert_bottom_paging_ = v;
+    save_settings_();
   }
 
   bool invert_side_buttons() const {
@@ -123,6 +125,7 @@ class Application {
   }
   void set_invert_side_buttons(bool v) {
     invert_side_buttons_ = v;
+    save_settings_();
   }
 
   bool rotate_display() const {
@@ -130,6 +133,7 @@ class Application {
   }
   void set_rotate_display(bool v) {
     rotate_display_ = v;
+    save_settings_();
   }
 
   int menu_font_size() const {
@@ -138,6 +142,7 @@ class Application {
   void set_menu_font_size(int v) {
     menu_font_size_ = v;
     ListMenuScreen::set_font_size(v);
+    save_settings_();
   }
 
   const std::string& custom_font_path() const {

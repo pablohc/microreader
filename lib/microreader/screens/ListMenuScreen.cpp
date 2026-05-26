@@ -42,6 +42,8 @@ void ListMenuScreen::start(DrawBuffer& buf, IRuntime& runtime) {
     center_on_selected_();
   else
     ensure_visible_();
+  while (selected_ < count() && selected_ < (int)separators_.size() && separators_[selected_])
+    ++selected_;
   draw_all_(buf, runtime.battery_percentage());
 }
 
@@ -181,8 +183,13 @@ void ListMenuScreen::draw_all_(DrawBuffer& buf, std::optional<uint8_t> battery_p
   // Compute total height for centring when all items fit on screen.
   // Separators are drawn as a thin line taking half a line slot.
   int total_h = 0;
-  for (int i = scroll_offset_; i < end; ++i)
-    total_h += (i < (int)separators_.size() && separators_[i]) ? line_h / 2 : line_h;
+  for (int i = scroll_offset_; i < end; ++i) {
+    if (i < (int)separators_.size() && separators_[i]) {
+      total_h += (i < (int)labels_.size() && !labels_[i].empty()) ? line_h : line_h / 2;
+    } else {
+      total_h += line_h;
+    }
+  }
 
   const int items_y = n <= visible ? header_h + (H - kBottomPadding - header_h - total_h) / 2 : header_h;
 
@@ -194,7 +201,15 @@ void ListMenuScreen::draw_all_(DrawBuffer& buf, std::optional<uint8_t> battery_p
   for (int i = scroll_offset_; i < end; ++i) {
     const bool is_sep = (i < (int)separators_.size() && separators_[i]);
     if (is_sep) {
-      y += line_h / 2;
+      const std::string& hdr = labels_[i];
+      if (!hdr.empty()) {
+        const size_t hlen = hdr.size();
+        const int hw = ui_font_.word_width(hdr.c_str(), hlen, FontStyle::Regular);
+        buf.draw_text_proportional((W - hw) / 2, y + baseline, hdr.c_str(), hlen, ui_font_, false);
+        y += line_h;
+      } else {
+        y += line_h / 2;
+      }
       continue;
     }
     const std::string& label_str = labels_[i];
@@ -436,9 +451,10 @@ void ListMenuScreen::update(const ButtonState& buttons, DrawBuffer& buf, IRuntim
     hold_frames_down_ = 0;
   }
 
-  if (moved || needs_draw) {
+  if (moved || needs_draw || force_redraw_) {
     draw_all_(buf, runtime.battery_percentage());
     buf.refresh();
+    force_redraw_ = false;
   }
 }
 
