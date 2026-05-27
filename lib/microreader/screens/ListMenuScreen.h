@@ -42,6 +42,7 @@ class ListMenuScreen : public IScreen {
 
   protected:
   const char* title_ = nullptr;
+  const char* title2_ = nullptr;
   std::string subtitle_;
   std::string subtitle2_;
   std::string subtitle3_;
@@ -98,27 +99,10 @@ class ListMenuScreen : public IScreen {
   // Called when user presses back.
   virtual void on_back();
 
- private:
-  std::vector<std::string> labels_;
-  std::vector<bool> separators_;
-  std::vector<int> indents_;
-  bool align_left_ = false;
-  int selected_ = 0;
-  int scroll_offset_ = 0;
-  bool on_start_set_selection_ = false;
-  int initial_selection_ = -1;
-  // Hold-down acceleration counters (frames button has been held without a fresh press).
-  int hold_frames_up_ = 0;
-  int hold_frames_down_ = 0;
-  bool force_redraw_ = false;
-
-  BitmapFont ui_font_;
-  static int font_size_idx_;  // 0=Normal, 1=Large, 2=XLarge
-  BitmapFont header_font_;
-  DrawBuffer* buf_ = nullptr;
-  IRuntime* runtime_ = nullptr;
-
   protected:
+  BitmapFont ui_font_;
+  BitmapFont header_font_;
+  static int font_size_idx_;  // 0=Normal, 1=Large, 2=XLarge
   void request_redraw() { force_redraw_ = true; }
 
   // Re-run start() to rebuild items with updated settings (e.g. after font change).
@@ -132,6 +116,19 @@ class ListMenuScreen : public IScreen {
   void center_on_selected_();
 
  private:
+  std::vector<std::string> labels_;
+  std::vector<bool> separators_;
+  std::vector<int> indents_;
+  bool align_left_ = false;
+  int selected_ = 0;
+  int scroll_offset_ = 0;
+  bool on_start_set_selection_ = false;
+  int initial_selection_ = -1;
+  int hold_frames_up_ = 0;
+  int hold_frames_down_ = 0;
+  bool force_redraw_ = false;
+  DrawBuffer* buf_ = nullptr;
+  IRuntime* runtime_ = nullptr;
   void draw_button_hints_(DrawBuffer& buf) const;
 };
 
