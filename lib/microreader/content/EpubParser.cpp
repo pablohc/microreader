@@ -1047,6 +1047,9 @@ class BodyParser {
   std::optional<uint8_t> pre_depth_;              // inside <pre>: preserve whitespace
   bool merge_after_float_ = false;                // suppress next block flush after float close
   bool float_had_text_ = false;                   // true if text was pushed during a float
+  std::optional<uint8_t> drop_cap_depth_;         // inside <span float:left> awaiting single-char drop cap
+  std::optional<char32_t> drop_cap_char_;         // captured drop cap codepoint
+  std::optional<uint8_t> drop_cap_size_pct_;      // font-size to apply (150% or CSS override)
   struct AlignmentEntry {
     std::optional<Alignment> prev_value;
     uint8_t depth;
@@ -1524,6 +1527,7 @@ static EpubError parse_xhtml_events(XmlReader& reader, const CssStylesheet* inli
       }
 
       bool is_floated = style.has_is_float_ && style.is_float;
+      bool is_drop_cap_span = is_floated && !is_block_element(ev.name);
       bool is_hidden = style.has_is_hidden_ && style.is_hidden;
 
       // Skip hidden elements entirely
@@ -1702,15 +1706,21 @@ static EpubError parse_xhtml_events(XmlReader& reader, const CssStylesheet* inli
         parser.set_vertical_align(style.vertical_align);
       }
       if (style.has_is_float_ && style.is_float) {
-        // If we're already in merge-after-float mode (from a previous float),
-        // flush pending content before starting a new float.
-        // This prevents e.g. sidenote text from merging into a subsequent float's context.
-        if (parser.merge_after_float_) {
-          parser.flush_run();
-          parser.merge_after_float_ = false;
+        if (is_drop_cap_span) {
+          // <span float:left> — treat as text-based drop cap (single oversized char).
+          // Don't enter float mode; just mark the depth and wait for a single character.
+          parser.drop_cap_depth_ = parser.depth;
+          parser.drop_cap_char_.reset();
+          parser.drop_cap_size_pct_ = style.has_font_size_pct_ ? std::min(style.font_size_pct, static_cast<uint8_t>(150)) : static_cast<uint8_t>(150);
+        } else {
+          // Block float (e.g. <div class="figleft">) — existing float-image pipeline.
+          if (parser.merge_after_float_) {
+            parser.flush_run();
+            parser.merge_after_float_ = false;
+          }
+          parser.float_depth = parser.depth;
+          parser.float_had_text_ = false;
         }
-        parser.float_depth = parser.depth;
-        parser.float_had_text_ = false;
       }
 
     } else if (ev.type == XmlEventType::EndElement) {
@@ -1743,6 +1753,11 @@ static EpubError parse_xhtml_events(XmlReader& reader, const CssStylesheet* inli
       while (!parser.vertical_align_stack_.empty() && parser.depth < parser.vertical_align_stack_.back().depth) {
         parser.set_vertical_align(parser.vertical_align_stack_.back().prev_value);
         parser.vertical_align_stack_.pop_back();
+      }
+      if (parser.drop_cap_depth_.has_value() && parser.depth < *parser.drop_cap_depth_) {
+        parser.drop_cap_depth_.reset();
+        parser.drop_cap_char_.reset();
+        parser.drop_cap_size_pct_.reset();
       }
       if (parser.float_depth.has_value() && parser.depth < *parser.float_depth) {
         parser.float_depth.reset();
@@ -1819,6 +1834,41 @@ static EpubError parse_xhtml_events(XmlReader& reader, const CssStylesheet* inli
         if (parser.float_depth.has_value()) {
           parser.float_had_text_ = true;
         }
+      }
+      // Drop cap: capture single character inside <span float:left>
+      if (parser.drop_cap_depth_.has_value() && !parser.drop_cap_char_.has_value()) {
+        const char* d = ev.content.data;
+        const char* end = d + ev.content.length;
+        char32_t cp = 0;
+        size_t cp_len = 0;
+        if (end > d) {
+          unsigned char b = static_cast<unsigned char>(*d);
+          if (b < 0x80) { cp = b; cp_len = 1; }
+          else if ((b & 0xE0) == 0xC0 && end - d >= 2) { cp = (b & 0x1F) << 6 | (d[1] & 0x3F); cp_len = 2; }
+          else if ((b & 0xF0) == 0xE0 && end - d >= 3) { cp = ((b & 0x0F) << 12) | ((d[1] & 0x3F) << 6) | (d[2] & 0x3F); cp_len = 3; }
+          else if ((b & 0xF8) == 0xF0 && end - d >= 4) { cp = ((b & 0x07) << 18) | ((d[1] & 0x3F) << 12) | ((d[2] & 0x3F) << 6) | (d[3] & 0x3F); cp_len = 4; }
+        }
+        // Accept only if the text node is exactly this one codepoint (no extra text)
+        const char* rest = d + cp_len;
+        bool rest_is_ws = true;
+        for (const char* p = rest; p < end; ++p) {
+          if (!std::isspace(static_cast<unsigned char>(*p))) { rest_is_ws = false; break; }
+        }
+        if (cp > 0 && cp_len > 0 && rest_is_ws) {
+          parser.drop_cap_char_ = cp;
+          parser.flush_text(false);
+          Run dc;
+          dc.text.assign(d, cp_len);
+          dc.style = parser.style();
+          dc.size_pct = *parser.drop_cap_size_pct_;
+          parser.runs_.push_back(std::move(dc));
+          // Push any trailing whitespace as normal text
+          for (const char* p = rest; p < end; ++p)
+            parser.push_text(p, 1);
+          continue;
+        }
+        // Not a single-char drop cap — fall through to normal text handling
+        parser.drop_cap_depth_.reset();
       }
       parser.push_text(ev.content.data, ev.content.length);
 #ifdef ESP_PLATFORM
