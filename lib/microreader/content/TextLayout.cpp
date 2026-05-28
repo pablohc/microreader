@@ -740,9 +740,12 @@ static uint16_t build_page_items(PageContent& page, std::vector<TextLayout::Page
         page.items.push_back(PageImageItem{item.para_idx, item.img_key, item.img_w, item.height, item.img_x, y,
                                            item.img_y_crop, item.img_h});
         break;
-      case TextLayout::PageItem::Hr:
-        page.items.push_back(PageHrItem{opts.padding_left, y, cw, dy});  // y_offset = slot top; render adds dy/2
+      case TextLayout::PageItem::Hr: {
+        const uint16_t hr_w = cw / 3;
+        page.items.push_back(PageHrItem{
+            static_cast<uint16_t>(opts.padding_left + (cw - hr_w) / 2), y, hr_w, dy});
         break;
+      }
       case TextLayout::PageItem::Empty:
       case TextLayout::PageItem::PageBreak:
       case TextLayout::PageItem::Spacer:

@@ -677,7 +677,7 @@ void ReaderScreen::render_page_(DrawBuffer& buf) {
     if (!h)
       continue;
     const int hr_y = static_cast<int>(h->y_offset) + static_cast<int>(h->height) / 2;
-    buf.fill_rect(static_cast<int>(h->x_offset), hr_y, static_cast<int>(h->width), 1, false);
+    buf.fill_rect(static_cast<int>(h->x_offset), hr_y - 1, static_cast<int>(h->width), 2, false);
   }
 
   for (const auto& itd : images) {
